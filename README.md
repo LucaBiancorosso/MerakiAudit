@@ -1,7 +1,7 @@
 # Meraki Toolkit
 
-A collection of CLI scripts to interact with the Cisco Meraki Dashboard API.  
-Supports listing organizations, networks, inventory, SSIDs, and generating End-of-Life (EoL) forecasts.
+A collection of CLI tools to interact with the Cisco Meraki Dashboard API.
+Covers inventory listing, SSID/RF/AP configuration auditing, and End-of-Life forecasting — all org-wide or filtered to a single network.
 
 ---
 
@@ -39,27 +39,48 @@ cp .env.example .env
 ```
 meraki_toolkit/
 ├── config/
-│   └── settings.py             # Env-based configuration
+│   └── settings.py                 # Env-based configuration (API key, log path)
 ├── lib/
-│   ├── meraki_client.py        # Authenticated DashboardAPI factory
-│   ├── output.py               # CSV / JSON helpers
-│   └── standards.py            # Standards loader and field comparator
+│   ├── meraki_client.py            # Authenticated DashboardAPI factory
+│   ├── output.py                   # CSV / JSON file writers
+│   ├── standards.py                # Standards loader, field comparator, subnet checker
+│   └── audit_common.py             # Shared audit helpers (rows, summary, XLSX output)
 ├── tools/
-│   ├── list_organizations.py   # List all orgs
-│   ├── list_networks.py        # List networks in an org
-│   ├── list_inventory.py       # List devices with EoX data
-│   ├── list_ssid.py            # List SSIDs in a network
-│   ├── list_ssid_settings.py   # Detailed SSID settings
-│   ├── audit_ssid.py           # SSID compliance audit
-│   └── forecast_eol.py         # Generate EoL forecast Excel report
-├── standards/                  # Compliance standard templates
-│   └── ssid_standards_template.xlsx
-├── output/                     # Generated files (git-ignored)
+│   ├── list_organizations.py       # List all orgs accessible by the API key
+│   ├── list_networks.py            # List networks in an org
+│   ├── list_inventory.py           # List devices with EoX lifecycle data
+│   ├── list_ssid.py                # List SSIDs in a network
+│   ├── list_ssid_settings.py       # Detailed SSID settings (auth, VLAN, RADIUS, etc.)
+│   ├── audit_ssid.py               # SSID compliance audit
+│   ├── audit_rf_profile.py         # RF profile compliance audit
+│   ├── audit_ap.py                 # AP management & connectivity audit
+│   └── forecast_eol.py             # End-of-Life forecast Excel report
+├── standards/
+│   └── ssid_standards_template.xlsx   # Standards template (fill in and use for audits)
+├── output/                         # Generated files — git-ignored
 ├── .env.example
 ├── .gitignore
 ├── requirements.txt
 └── README.md
 ```
+
+---
+
+## Standards File
+
+All three audit tools share a single Excel file: `standards/ssid_standards_template.xlsx`.
+It contains the following sheets:
+
+| Sheet | Used by | Key columns |
+|---|---|---|
+| `Standards` | `audit_ssid` | `org_id`, `network_id` *(optional)*, `ssid_name` |
+| `RFProfiles` | `audit_rf_profile` | `org_id`, `network_id` *(optional)*, `profile_name` |
+| `APConfig` | `audit_ap` | `org_id`, `network_id` *(optional)* |
+| `Ignore` | all audit tools | `field_name` — fields to skip globally |
+
+**Network-level overrides:** for all sheets, leaving `network_id` blank defines an org-wide default. Filling it in creates a network-specific standard that takes priority over the org-wide row for that network. This allows most networks to share one standard while a specific network can deviate.
+
+**Tip:** format `org_id` and `network_id` cells as **Text** in Excel to prevent large IDs from being converted to scientific notation.
 
 ---
 
@@ -79,7 +100,7 @@ python -m tools.list_networks --org-id <ORG_ID>
 python -m tools.list_networks --org-id <ORG_ID> --csv --json
 ```
 
-### List Inventory (with EoX)
+### List Inventory (with EoX lifecycle data)
 ```bash
 python -m tools.list_inventory --org-id <ORG_ID>
 python -m tools.list_inventory --org-id <ORG_ID> --csv --json
@@ -92,25 +113,122 @@ python -m tools.list_inventory --org-id <ORG_ID> --eox-status endOfSupport --csv
 ```bash
 python -m tools.list_ssid --network-id <NETWORK_ID>
 python -m tools.list_ssid --network-id <NETWORK_ID> --csv --json
+
+# Include unconfigured placeholder slots (hidden by default)
+python -m tools.list_ssid --network-id <NETWORK_ID> --include-unconfigured
 ```
 
 ### List SSID Settings (detailed)
+Includes auth mode, encryption, VLAN tagging, client IP assignment, RADIUS hosts, bandwidth limits, splash page, and more.
+
 ```bash
 python -m tools.list_ssid_settings --network-id <NETWORK_ID>
 python -m tools.list_ssid_settings --network-id <NETWORK_ID> --csv --json
+python -m tools.list_ssid_settings --network-id <NETWORK_ID> --include-unconfigured
 ```
+
+---
+
+## Audit Tools
+
+All audit tools share the same behaviour:
+- **`--network-id`** limits the audit to a single network (MISSING checks are suppressed since a standard SSID/profile may simply live in a different network).
+- **`--xlsx`** produces a colour-coded Excel report with a Summary sheet and a Detail sheet.
+- **`--csv`** writes a `_detail.csv` and `_summary.csv` to the `output/` directory.
+- **Unconfigured SSIDs** (`Unconfigured SSID N`) are silently skipped in all wireless audits.
+- Detail rows carry a `standard_level` column (`org` or `network`) showing which standard was applied.
+
+### Result codes
+
+| Result | Meaning |
+|---|---|
+| `PASS` | Field matches the standard |
+| `FAIL` | Field does not match the standard |
+| `NOT_DEFINED` | Standard cell was left blank — field is not audited |
+| `IGNORED` | Field is listed in the `Ignore` sheet |
+| `NON_STANDARD` | Entity exists live but has no entry in the standard |
+| `MISSING` / `MISSING_SSID` | Entity is defined in the standard but not found live |
+
+---
 
 ### SSID Compliance Audit
-Requires a filled-in standards file (see `standards/ssid_standards_template.xlsx`).
+
+Audits every SSID in every wireless network against the `Standards` sheet.
+
+Checked fields include: `enabled`, `authMode`, `encryptionMode`, `wpaEncryptionMode`,
+`ipAssignmentMode`, `defaultVlanId`, `useVlanTagging`, `concentratorNetworkId`,
+`lanIsolationEnabled`, `perClientBandwidthLimitUp`, `perClientBandwidthLimitDown`,
+`bandSelection`, `minBitrate`, `ssidAdminAccessible`, `radiusEnabled`,
+`radiusAccountingEnabled`, `radiusHosts` *(compared as unordered set)*, `splashPage`,
+`walledGardenEnabled`, `visible`.
 
 ```bash
-python -m tools.audit_ssid --org-id <ORG_ID> --standards-file standards/ssid_standards_template.xlsx --xlsx
-# Audit a single network only
-python -m tools.audit_ssid --org-id <ORG_ID> --standards-file standards/ssid_standards_template.xlsx --network-id <NETWORK_ID> --xlsx
+# Audit all networks in an org
+python -m tools.audit_ssid --org-id <ORG_ID> \
+    --standards-file standards/ssid_standards_template.xlsx --xlsx
+
+# Audit a single network
+python -m tools.audit_ssid --org-id <ORG_ID> \
+    --standards-file standards/ssid_standards_template.xlsx \
+    --network-id <NETWORK_ID> --xlsx --csv
 ```
 
+---
+
+### RF Profile Audit
+
+Audits RF profiles in every wireless network against the `RFProfiles` sheet.
+
+Checked fields include (all three bands where applicable):
+`clientBalancingEnabled`, `minBitrateType`, `bandSelectionType`, `transmission_enabled`,
+`isIndoorDefault`, `isOutdoorDefault`, `ap_bandOperationMode`, `ap_bandSteeringEnabled`,
+`ap_bands_enabled`, `2g_maxPower`, `2g_minPower`, `2g_minBitrate`, `2g_validAutoChannels`,
+`2g_axEnabled`, `2g_rxsop`, `5g_maxPower`, `5g_minPower`, `5g_minBitrate`,
+`5g_channelWidth`, `5g_validAutoChannels`, `5g_rxsop`, and the equivalent `6g_*` fields.
+
+Channel and band lists are compared as **unordered sets** — `"1,6,11"` matches `"11,6,1"`.
+
+```bash
+python -m tools.audit_rf_profile --org-id <ORG_ID> \
+    --standards-file standards/ssid_standards_template.xlsx --xlsx
+
+python -m tools.audit_rf_profile --org-id <ORG_ID> \
+    --standards-file standards/ssid_standards_template.xlsx \
+    --network-id <NETWORK_ID> --xlsx --csv
+```
+
+---
+
+### AP Configuration Audit
+
+Audits every wireless AP in the org against the `APConfig` sheet.
+Combines three API calls per network: device inventory, alternate management interface, and mesh status.
+
+| Field | Check type | Description |
+|---|---|---|
+| `mgmt_ip_mode` | exact | `static` or `dhcp` |
+| `mgmt_ip_in_subnet` | CIDR membership | AP management IP must fall within one of the comma-separated CIDR ranges defined in the standard (e.g. `10.0.0.0/8, 192.168.1.0/24`) |
+| `mgmt_vlan` | exact | Management VLAN ID from alternate management interface |
+| `mgmt_dns1` | exact | Primary DNS server |
+| `mgmt_dns2` | exact | Secondary DNS server |
+| `connection_mode` | exact | `gateway` or `mesh` (derived from mesh status API) |
+| `tags_subset` | subset | All expected tags must be present on the AP; additional tags are allowed |
+
+```bash
+python -m tools.audit_ap --org-id <ORG_ID> \
+    --standards-file standards/ssid_standards_template.xlsx --xlsx
+
+python -m tools.audit_ap --org-id <ORG_ID> \
+    --standards-file standards/ssid_standards_template.xlsx \
+    --network-id <NETWORK_ID> --xlsx --csv
+```
+
+---
+
 ### EoL Forecast (Excel report)
-Requires inventory CSV files to be already generated (run `list_inventory` first for each org).
+
+Generates a multi-sheet Excel workbook forecasting device End-of-Life by model and year.
+Requires inventory CSV files to be generated first (`list_inventory --csv` for each org).
 
 ```bash
 python -m tools.forecast_eol
@@ -120,13 +238,13 @@ python -m tools.forecast_eol --only-eol --only-network-associated
 
 | Argument | Default | Description |
 |---|---|---|
-| `--date-field` | `entOfSupportAt` | Lifecycle date to use (`entOfSupportAt` or `endOfSaleAt`) |
-| `--start-year` | current year | First year column in forecast |
-| `--end-year` | current year + 7 | Last year column in forecast |
-| `--org-file` | `output/organizations.csv` | Path to organizations CSV |
-| `--only-eol` | false | Include only devices with a date in the forecast range |
-| `--only-network-associated` | false | Exclude unassigned devices |
-| `--output-file` | `output/eol_forecast.xlsx` | Output path |
+| `--date-field` | `entOfSupportAt` | Lifecycle date field: `entOfSupportAt` or `endOfSaleAt` |
+| `--start-year` | current year | First year column in the forecast |
+| `--end-year` | current year + 7 | Last year column in the forecast |
+| `--org-file` | `output/organizations.csv` | Path to the organizations CSV (run `list_organizations` first) |
+| `--only-eol` | false | Only include devices with a lifecycle date within the forecast range |
+| `--only-network-associated` | false | Exclude devices not assigned to any network |
+| `--output-file` | `output/eol_forecast.xlsx` | Output file path |
 
 ---
 
@@ -142,6 +260,8 @@ All generated files are saved in the `output/` directory and are git-ignored by 
 | `list_ssid` | `ssids_<network_id>.csv`, `ssids_<network_id>.json` |
 | `list_ssid_settings` | `ssid_setting_<network_id>.csv`, `ssid_setting_<network_id>.json` |
 | `audit_ssid` | `audit_ssid_<org_id>.xlsx`, `audit_ssid_<org_id>_detail.csv`, `audit_ssid_<org_id>_summary.csv` |
+| `audit_rf_profile` | `audit_rf_<org_id>.xlsx`, `audit_rf_<org_id>_detail.csv`, `audit_rf_<org_id>_summary.csv` |
+| `audit_ap` | `audit_ap_<org_id>.xlsx`, `audit_ap_<org_id>_detail.csv`, `audit_ap_<org_id>_summary.csv` |
 | `forecast_eol` | `eol_forecast.xlsx` |
 
 ---

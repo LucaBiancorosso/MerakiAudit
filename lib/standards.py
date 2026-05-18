@@ -182,3 +182,155 @@ def compare_field(
         "actual":   _cell_to_str(actual),
         "result":   result,
     }
+
+
+# ===========================================================================
+# RF Profile standards
+# ===========================================================================
+
+_RF_KEY_FIELDS = {"org_id", "network_id", "profile_name"}
+
+
+def load_rf_standards(path: Path) -> dict[tuple[str, str, str], dict[str, Any]]:
+    """
+    Read the RFProfiles sheet.
+    Key: (org_id, network_id, profile_name) — all lowercase.
+    network_id is optional (blank = org-wide default).
+    """
+    wb = openpyxl.load_workbook(path, data_only=True)
+    if "RFProfiles" not in wb.sheetnames:
+        return {}
+
+    ws = wb["RFProfiles"]
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return {}
+
+    headers = [_cell_to_str(h).strip() for h in rows[0]]
+    standards: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    for row in rows[1:]:
+        rd = dict(zip(headers, row))
+        org_id      = _normalise(rd.get("org_id"))
+        network_id  = _normalise(rd.get("network_id"))
+        profile_name = _cell_to_str(rd.get("profile_name")).strip()
+
+        if not org_id or not profile_name or profile_name.lower() in ("profile_name", "← required"):
+            continue
+
+        key = (org_id, network_id, profile_name.lower())
+        fields: dict[str, Any] = {}
+        for header, value in rd.items():
+            if header in _RF_KEY_FIELDS or not header:
+                continue
+            cell_str = _cell_to_str(value).strip()
+            fields[header] = NOT_DEFINED if cell_str == "" else cell_str
+
+        standards[key] = fields
+
+    return standards
+
+
+def resolve_rf_standard(
+    standards: dict[tuple[str, str, str], dict[str, Any]],
+    org_id: str,
+    network_id: str,
+    profile_name: str,
+) -> dict[str, Any] | None:
+    oid   = org_id.strip().lower()
+    nid   = network_id.strip().lower()
+    pname = profile_name.strip().lower()
+    return (
+        standards.get((oid, nid,  pname))
+        or standards.get((oid, "", pname))
+    )
+
+
+# ===========================================================================
+# AP Config standards
+# ===========================================================================
+
+_AP_KEY_FIELDS = {"org_id", "network_id"}
+
+
+def load_ap_standards(path: Path) -> dict[tuple[str, str], dict[str, Any]]:
+    """
+    Read the APConfig sheet.
+    Key: (org_id, network_id) — network_id blank = org-wide default.
+    """
+    wb = openpyxl.load_workbook(path, data_only=True)
+    if "APConfig" not in wb.sheetnames:
+        return {}
+
+    ws = wb["APConfig"]
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return {}
+
+    headers = [_cell_to_str(h).strip() for h in rows[0]]
+    standards: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for row in rows[1:]:
+        rd = dict(zip(headers, row))
+        org_id     = _normalise(rd.get("org_id"))
+        network_id = _normalise(rd.get("network_id"))
+
+        if not org_id or org_id in ("org_id", "← required"):
+            continue
+
+        key = (org_id, network_id)
+        fields: dict[str, Any] = {}
+        for header, value in rd.items():
+            if header in _AP_KEY_FIELDS or not header:
+                continue
+            cell_str = _cell_to_str(value).strip()
+            fields[header] = NOT_DEFINED if cell_str == "" else cell_str
+
+        standards[key] = fields
+
+    return standards
+
+
+def resolve_ap_standard(
+    standards: dict[tuple[str, str], dict[str, Any]],
+    org_id: str,
+    network_id: str,
+) -> dict[str, Any] | None:
+    oid = org_id.strip().lower()
+    nid = network_id.strip().lower()
+    return (
+        standards.get((oid, nid))
+        or standards.get((oid, ""))
+    )
+
+
+# ===========================================================================
+# Subnet check utility (for AP management IP audit)
+# ===========================================================================
+
+import ipaddress as _ipaddress
+
+
+def ip_in_allowed_subnets(ip: str, subnets_csv: str) -> bool:
+    """
+    Return True if `ip` falls within any of the comma-separated CIDR subnets.
+    Gracefully ignores blank or malformed entries.
+    """
+    if not ip or not subnets_csv:
+        return False
+    try:
+        addr = _ipaddress.ip_address(ip.strip())
+    except ValueError:
+        return False
+
+    for subnet_str in subnets_csv.split(","):
+        subnet_str = subnet_str.strip()
+        if not subnet_str:
+            continue
+        try:
+            net = _ipaddress.ip_network(subnet_str, strict=False)
+            if addr in net:
+                return True
+        except ValueError:
+            continue
+    return False
