@@ -145,9 +145,19 @@ def fetch_ssids_for_network(dashboard, network_id: str) -> list[dict]:
 
 _AUDITED_FIELDS = [
     "ssid_number", "enabled", "authMode", "encryptionMode",
-    "wpaEncryptionMode", "ipAssignmentMode", "bandSelection", "minBitrate",
+    "wpaEncryptionMode",
+    # ── Client IP / addressing ──────────────────────────────────────────────
+    "ipAssignmentMode", "defaultVlanId", "useVlanTagging",
+    "concentratorNetworkId", "lanIsolationEnabled",
+    # ── Per-client bandwidth limits ─────────────────────────────────────────
+    "perClientBandwidthLimitUp", "perClientBandwidthLimitDown",
+    # ── Radio / band ────────────────────────────────────────────────────────
+    "bandSelection", "minBitrate",
+    # ── Auth / RADIUS ────────────────────────────────────────────────────────
     "ssidAdminAccessible", "radiusEnabled", "radiusAccountingEnabled",
-    "radiusHosts", "splashPage", "walledGardenEnabled", "visible",
+    "radiusHosts",
+    # ── Splash / visibility ──────────────────────────────────────────────────
+    "splashPage", "walledGardenEnabled", "visible",
 ]
 
 
