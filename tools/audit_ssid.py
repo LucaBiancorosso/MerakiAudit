@@ -20,6 +20,7 @@ from lib.standards import (
     compare_field,
     load_ignored_fields,
     load_standards,
+    resolve_standard,
 )
 
 
@@ -167,7 +168,7 @@ def audit_network(
     network_id: str,
     network_name: str,
     live_ssids: list[dict],
-    standards: dict[tuple[str, str], dict],
+    standards: dict[tuple[str, str, str], dict],
     ignored_fields: set[str],
     single_network_mode: bool = False,
 ) -> list[dict]:
@@ -182,17 +183,29 @@ def audit_network(
 
     live_by_name = {s["ssid_name"]: s for s in live_ssids}
     live_by_name_lower = {k.lower(): v for k, v in live_by_name.items()}
-    # standard keys use lowercase ssid_name (set in load_standards)
+    oid = org_id.strip().lower()
+    nid = network_id.strip().lower()
+    # Collect SSID names that have a standard for this org (org-level or
+    # network-specific for this network). Used for MISSING_SSID detection.
     standard_names_lower = {
         ssid_name_lower
-        for (oid, ssid_name_lower) in standards
-        if oid == org_id.strip().lower()
+        for (o, n, ssid_name_lower) in standards
+        if o == oid and n in ("", nid)
     }
 
     # ── Check every live SSID ────────────────────────────────────────────────
     for ssid_name, live in live_by_name.items():
-        key = (org_id.strip().lower(), ssid_name.lower())
-        standard = standards.get(key)
+        standard = resolve_standard(standards, org_id, network_id, ssid_name)
+        # Track which level the standard came from for reporting
+        oid_l = org_id.strip().lower()
+        nid_l = network_id.strip().lower()
+        sname_l = ssid_name.strip().lower()
+        if standards.get((oid_l, nid_l, sname_l)) is not None:
+            standard_level = "network"
+        elif standards.get((oid_l, "", sname_l)) is not None:
+            standard_level = "org"
+        else:
+            standard_level = ""
 
         if standard is None:
             # SSID exists live but not in standard → NON_STANDARD
@@ -207,6 +220,7 @@ def audit_network(
                         expected="",
                         actual=str(live.get(field, "")),
                         result="NON_STANDARD",
+                        standard_level="",
                     )
                 )
             continue
@@ -225,6 +239,7 @@ def audit_network(
                     expected=check["expected"],
                     actual=check["actual"],
                     result=check["result"],
+                    standard_level=standard_level,
                 )
             )
 
@@ -235,6 +250,8 @@ def audit_network(
 
     for ssid_name_lower in standard_names_lower:
         if ssid_name_lower not in live_by_name_lower:
+            # Determine level of the missing standard
+            _ml = "network" if standards.get((oid, nid, ssid_name_lower)) else "org"
             detail_rows.append(
                 _make_row(
                     org_id, org_name, network_id, network_name,
@@ -243,6 +260,7 @@ def audit_network(
                     expected="",
                     actual="",
                     result="MISSING_SSID",
+                    standard_level=_ml,
                 )
             )
 
@@ -253,18 +271,20 @@ def _make_row(
     org_id, org_name, network_id, network_name,
     ssid_name, ssid_number,
     field, expected, actual, result,
+    standard_level: str = "",
 ) -> dict:
     return {
-        "org_id":       org_id,
-        "org_name":     org_name,
-        "network_id":   network_id,
-        "network_name": network_name,
-        "ssid_name":    ssid_name,
-        "ssid_number":  ssid_number if ssid_number is not None else "",
-        "field":        field,
-        "expected":     expected,
-        "actual":       actual,
-        "result":       result,
+        "org_id":          org_id,
+        "org_name":        org_name,
+        "network_id":      network_id,
+        "network_name":    network_name,
+        "ssid_name":       ssid_name,
+        "ssid_number":     ssid_number if ssid_number is not None else "",
+        "standard_level":  standard_level,   # "org", "network", or ""
+        "field":           field,
+        "expected":        expected,
+        "actual":          actual,
+        "result":          result,
     }
 
 
@@ -418,7 +438,7 @@ def write_xlsx_report(
 
     det_headers = [
         "org_id", "org_name", "network_id", "network_name",
-        "ssid_name", "ssid_number", "field", "expected", "actual", "result",
+        "ssid_name", "ssid_number", "standard_level", "field", "expected", "actual", "result",
     ]
     ws_det.append(det_headers)
     _style_header_row(ws_det)
@@ -447,7 +467,7 @@ def write_xlsx_report(
 
 _DETAIL_CSV_FIELDS = [
     "org_id", "org_name", "network_id", "network_name",
-    "ssid_name", "ssid_number", "field", "expected", "actual", "result",
+    "ssid_name", "ssid_number", "standard_level", "field", "expected", "actual", "result",
 ]
 
 _SUMMARY_CSV_FIELDS = [
@@ -487,8 +507,9 @@ def main() -> None:
         print(f"  Keys found: {[k[0] for k in standards]}")
 
     print(f"  {len(org_standards)} SSID standard(s) found for this org.")
-    for (oid, sname) in org_standards:
-        print(f"    standard: ssid_name={sname!r}")
+    for (oid, nid, sname) in org_standards:
+        level = f"network={nid}" if nid else "org-wide"
+        print(f"    standard: ssid_name={sname!r}  [{level}]")
     if ignored_fields:
         print(f"  Ignored fields: {', '.join(sorted(ignored_fields))}")
     print()

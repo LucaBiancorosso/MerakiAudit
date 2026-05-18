@@ -7,7 +7,7 @@ import openpyxl
 
 
 # Fields that are identity keys, not audited config fields
-_KEY_FIELDS = {"org_id", "ssid_name"}
+_KEY_FIELDS = {"org_id", "network_id", "ssid_name"}
 
 # Sentinel for a blank standard cell
 NOT_DEFINED = "NOT_DEFINED"
@@ -19,11 +19,11 @@ def _cell_to_str(value: Any) -> str:
     the ways Excel and openpyxl can mangle data:
 
       - float with no fractional part (e.g. 123456.0 -> '123456')
-        Happens when a numeric org_id column is not formatted as Text in Excel.
+        Happens when a numeric org_id/network_id column is not formatted as Text.
       - bool stored as Python bool (e.g. True -> 'True', False -> 'False')
         Happens when the user types TRUE/FALSE and Excel stores as boolean.
       - scientific notation floats (e.g. 1.23457e+11)
-        Happens for large org IDs that Excel auto-converts to scientific notation.
+        Happens for large IDs that Excel auto-converts to scientific notation.
       - plain int / str: converted with str() as usual.
     """
     if value is None:
@@ -43,9 +43,14 @@ def _normalise(value: Any) -> str:
     return _cell_to_str(value).strip().lower()
 
 
-def load_standards(path: Path) -> dict[tuple[str, str], dict[str, Any]]:
+def load_standards(path: Path) -> dict[tuple[str, str, str], dict[str, Any]]:
     """
-    Read the Standards sheet and return a lookup keyed by (org_id, ssid_name).
+    Read the Standards sheet and return a lookup keyed by
+    (org_id, network_id, ssid_name) — all lowercase.
+
+    network_id is optional in the sheet: leave the cell blank to define an
+    org-wide standard.  A network-specific row (network_id filled in) takes
+    priority over an org-wide row during lookup; see resolve_standard().
 
     Each value is a dict of {field: expected_value}.
     Blank cells are stored as NOT_DEFINED sentinel so callers can distinguish
@@ -64,21 +69,20 @@ def load_standards(path: Path) -> dict[tuple[str, str], dict[str, Any]]:
 
     headers = [_cell_to_str(h).strip() for h in rows[0]]
 
-    standards: dict[tuple[str, str], dict[str, Any]] = {}
+    standards: dict[tuple[str, str, str], dict[str, Any]] = {}
 
     for row in rows[1:]:
         row_dict = dict(zip(headers, row))
 
-        # org_id: normalise robustly (handles int, float, str from Excel)
-        org_id = _normalise(row_dict.get("org_id"))
-        ssid_name = _cell_to_str(row_dict.get("ssid_name")).strip()
+        org_id     = _normalise(row_dict.get("org_id"))
+        network_id = _normalise(row_dict.get("network_id"))   # "" when blank → org-level
+        ssid_name  = _cell_to_str(row_dict.get("ssid_name")).strip()
 
         # Skip blank rows or the hint row in the template
         if not org_id or not ssid_name or ssid_name.lower() in ("ssid_name", "← required"):
             continue
 
-        # Key uses lowercase ssid_name so lookup is case-insensitive
-        key = (org_id, ssid_name.lower())
+        key = (org_id, network_id, ssid_name.lower())
         fields: dict[str, Any] = {}
 
         for header, value in row_dict.items():
@@ -90,6 +94,28 @@ def load_standards(path: Path) -> dict[tuple[str, str], dict[str, Any]]:
         standards[key] = fields
 
     return standards
+
+
+def resolve_standard(
+    standards: dict[tuple[str, str, str], dict[str, Any]],
+    org_id: str,
+    network_id: str,
+    ssid_name: str,
+) -> dict[str, Any] | None:
+    """
+    Look up the most specific standard for an SSID, with fallback:
+      1. Network-specific:  (org_id, network_id, ssid_name)
+      2. Org-wide:          (org_id, "",          ssid_name)
+      3. None → SSID is not in the standard at all (NON_STANDARD)
+    """
+    oid   = org_id.strip().lower()
+    nid   = network_id.strip().lower()
+    sname = ssid_name.strip().lower()
+
+    return (
+        standards.get((oid, nid,  sname))   # network-specific first
+        or standards.get((oid, "", sname))   # org-wide fallback
+    )
 
 
 def load_ignored_fields(path: Path) -> set[str]:
