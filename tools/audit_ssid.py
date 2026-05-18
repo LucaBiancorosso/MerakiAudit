@@ -5,6 +5,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+import re
+
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -19,6 +21,19 @@ from lib.standards import (
     load_ignored_fields,
     load_standards,
 )
+
+
+
+# ---------------------------------------------------------------------------
+# Unconfigured SSID filter
+# ---------------------------------------------------------------------------
+
+import re as _re
+_UNCONFIGURED_RE = _re.compile(r'^unconfigured\s+ssid\s+\d+$', _re.IGNORECASE)
+
+def _is_unconfigured(name: str) -> bool:
+    """Return True for Meraki placeholder SSIDs like 'Unconfigured SSID 1'."""
+    return bool(_UNCONFIGURED_RE.match((name or "").strip()))
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +96,9 @@ def fetch_ssids_for_network(dashboard, network_id: str) -> list[dict]:
 
     result = []
     for ssid in ssids:
+        # Skip placeholder SSIDs Meraki creates for every unused slot
+        if _is_unconfigured(ssid.get("name", "")):
+            continue
         radius_servers = ssid.get("radiusServers") or []
         radius_hosts = ",".join(
             srv.get("host", "")
