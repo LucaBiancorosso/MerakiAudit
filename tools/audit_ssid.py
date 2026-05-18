@@ -107,22 +107,33 @@ def fetch_ssids_for_network(dashboard, network_id: str) -> list[dict]:
         )
         result.append(
             {
-                "ssid_number":             ssid.get("number"),
-                "ssid_name":               ssid.get("name"),
-                "enabled":                 str(ssid.get("enabled")),
-                "authMode":                ssid.get("authMode"),
-                "encryptionMode":          ssid.get("encryptionMode"),
-                "wpaEncryptionMode":       ssid.get("wpaEncryptionMode"),
-                "ipAssignmentMode":        ssid.get("ipAssignmentMode"),
-                "bandSelection":           ssid.get("bandSelection"),
-                "minBitrate":              ssid.get("minBitrate"),
-                "ssidAdminAccessible":     str(ssid.get("ssidAdminAccessible")),
-                "radiusEnabled":           str(ssid.get("radiusEnabled")),
-                "radiusAccountingEnabled": str(ssid.get("radiusAccountingEnabled")),
-                "radiusHosts":             radius_hosts,
-                "splashPage":              ssid.get("splashPage"),
-                "walledGardenEnabled":     str(ssid.get("walledGardenEnabled")),
-                "visible":                 str(ssid.get("visible")),
+                "ssid_number":                  ssid.get("number"),
+                "ssid_name":                    ssid.get("name"),
+                "enabled":                      str(ssid.get("enabled")),
+                "authMode":                     ssid.get("authMode"),
+                "encryptionMode":               ssid.get("encryptionMode"),
+                "wpaEncryptionMode":            ssid.get("wpaEncryptionMode"),
+                # ── Client IP / addressing ───────────────────────────────
+                "ipAssignmentMode":             ssid.get("ipAssignmentMode"),
+                "defaultVlanId":                str(ssid.get("defaultVlanId")) if ssid.get("defaultVlanId") is not None else "",
+                "useVlanTagging":               str(ssid.get("useVlanTagging")),
+                "concentratorNetworkId":        ssid.get("concentratorNetworkId") or "",
+                "lanIsolationEnabled":          str(ssid.get("lanIsolationEnabled")),
+                # ── Per-client bandwidth limits ──────────────────────────
+                "perClientBandwidthLimitUp":    str(ssid.get("perClientBandwidthLimitUp") or "0"),
+                "perClientBandwidthLimitDown":  str(ssid.get("perClientBandwidthLimitDown") or "0"),
+                # ── Radio / band ─────────────────────────────────────────
+                "bandSelection":                ssid.get("bandSelection"),
+                "minBitrate":                   ssid.get("minBitrate"),
+                # ── Auth / RADIUS ─────────────────────────────────────────
+                "ssidAdminAccessible":          str(ssid.get("ssidAdminAccessible")),
+                "radiusEnabled":                str(ssid.get("radiusEnabled")),
+                "radiusAccountingEnabled":      str(ssid.get("radiusAccountingEnabled")),
+                "radiusHosts":                  radius_hosts,
+                # ── Splash / visibility ───────────────────────────────────
+                "splashPage":                   ssid.get("splashPage"),
+                "walledGardenEnabled":          str(ssid.get("walledGardenEnabled")),
+                "visible":                      str(ssid.get("visible")),
             }
         )
     return result
