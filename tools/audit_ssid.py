@@ -87,7 +87,7 @@ def build_network_lookup(dashboard, org_id: str) -> dict[str, str]:
 # SSID fetch
 # ---------------------------------------------------------------------------
 
-def fetch_ssids_for_network(dashboard, network_id: str) -> list[dict]:
+def fetch_ssids_for_network(dashboard, network_id: str, enabled_only: bool = False) -> list[dict]:
     """Return the raw SSID list for a network, normalising radius hosts."""
     try:
         ssids = dashboard.wireless.getNetworkWirelessSsids(network_id)
@@ -99,6 +99,9 @@ def fetch_ssids_for_network(dashboard, network_id: str) -> list[dict]:
     for ssid in ssids:
         # Skip placeholder SSIDs Meraki creates for every unused slot
         if _is_unconfigured(ssid.get("name", "")):
+            continue
+        # Skip disabled SSIDs when enabled_only is set
+        if enabled_only and not ssid.get("enabled", False):
             continue
         radius_servers = ssid.get("radiusServers") or []
         radius_hosts = ",".join(
@@ -485,6 +488,8 @@ def main() -> None:
     parser.add_argument("--org-id",         required=True,  help="Meraki Organization ID")
     parser.add_argument("--standards-file", required=True,  help="Path to standards Excel file")
     parser.add_argument("--network-id",     default=None,   help="Optional filter: single Network ID")
+    parser.add_argument("--enabled-only",   action="store_true",
+                        help="Only audit enabled SSIDs (skip disabled ones). Default: all SSIDs.")
     parser.add_argument("--csv",            action="store_true", help="Write CSV output")
     parser.add_argument("--xlsx",           action="store_true", help="Write XLSX report")
     args = parser.parse_args()
@@ -545,7 +550,8 @@ def main() -> None:
 
     for network_id, network_name in sorted(networks_to_audit.items(), key=lambda x: x[1]):
         print(f"  [{network_name}]  {network_id}")
-        live_ssids = fetch_ssids_for_network(dashboard, network_id)
+        live_ssids = fetch_ssids_for_network(dashboard, network_id,
+                                               enabled_only=args.enabled_only)
 
         if not live_ssids:
             print("    → no SSIDs returned (non-wireless network?), skipping.")

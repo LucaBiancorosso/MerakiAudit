@@ -334,3 +334,155 @@ def ip_in_allowed_subnets(ip: str, subnets_csv: str) -> bool:
         except ValueError:
             continue
     return False
+
+
+# ===========================================================================
+# Switch Interface standards
+# ===========================================================================
+
+_SW_KEY_FIELDS = {"org_id", "network_id", "role"}
+
+
+def expand_vlan_ranges(vlan_str: str) -> set[int]:
+    """
+    Expand a Meraki VLAN string like '1,3,5-10,20' into a set of ints.
+    'all' expands to the full 1-4094 range.
+    Gracefully skips malformed tokens.
+    """
+    if not vlan_str:
+        return set()
+    s = str(vlan_str).strip().lower()
+    if s == "all":
+        return set(range(1, 4095))
+    result: set[int] = set()
+    for token in s.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "-" in token:
+            parts = token.split("-", 1)
+            try:
+                lo, hi = int(parts[0]), int(parts[1])
+                result.update(range(lo, hi + 1))
+            except ValueError:
+                continue
+        else:
+            try:
+                result.add(int(token))
+            except ValueError:
+                continue
+    return result
+
+
+def load_switch_standards(path: Path) -> dict[tuple[str, str, str], dict[str, Any]]:
+    """
+    Read the SwitchInterfaces sheet.
+    Key: (org_id, network_id, role) — all lowercase.
+    network_id blank = org-wide default.
+    """
+    wb = openpyxl.load_workbook(path, data_only=True)
+    if "SwitchInterfaces" not in wb.sheetnames:
+        return {}
+
+    ws = wb["SwitchInterfaces"]
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return {}
+
+    headers = [_cell_to_str(h).strip() for h in rows[0]]
+    standards: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    for row in rows[1:]:
+        rd = dict(zip(headers, row))
+        org_id     = _normalise(rd.get("org_id"))
+        network_id = _normalise(rd.get("network_id"))
+        role       = _cell_to_str(rd.get("role")).strip().lower()
+
+        if not org_id or not role or role in ("role", "← required"):
+            continue
+
+        key = (org_id, network_id, role)
+        fields: dict[str, Any] = {}
+        for header, value in rd.items():
+            if header in _SW_KEY_FIELDS or not header:
+                continue
+            cell_str = _cell_to_str(value).strip()
+            fields[header] = NOT_DEFINED if cell_str == "" else cell_str
+
+        standards[key] = fields
+
+    return standards
+
+
+def resolve_switch_standard(
+    standards: dict[tuple[str, str, str], dict[str, Any]],
+    org_id: str,
+    network_id: str,
+    role: str,
+) -> dict[str, Any] | None:
+    oid  = org_id.strip().lower()
+    nid  = network_id.strip().lower()
+    role = role.strip().lower()
+    return (
+        standards.get((oid, nid,  role))
+        or standards.get((oid, "", role))
+    )
+
+
+# ===========================================================================
+# VLAN → role mapping
+# ===========================================================================
+
+_VLAN_KEY_FIELDS = {"org_id", "network_id", "vlan_id"}
+
+
+def load_vlan_roles(path: Path) -> dict[tuple[str, str, str], str]:
+    """
+    Read the VlanRoles sheet.
+    Key: (org_id, network_id, vlan_id_str) — all lowercase.
+    Returns {key: role_name}.
+    """
+    wb = openpyxl.load_workbook(path, data_only=True)
+    if "VlanRoles" not in wb.sheetnames:
+        return {}
+
+    ws = wb["VlanRoles"]
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return {}
+
+    headers = [_cell_to_str(h).strip() for h in rows[0]]
+    result: dict[tuple[str, str, str], str] = {}
+
+    for row in rows[1:]:
+        rd = dict(zip(headers, row))
+        org_id     = _normalise(rd.get("org_id"))
+        network_id = _normalise(rd.get("network_id"))
+        vlan_id    = _cell_to_str(rd.get("vlan_id")).strip()
+        role       = _cell_to_str(rd.get("role")).strip().lower()
+
+        if not org_id or not vlan_id or not role:
+            continue
+
+        result[(org_id, network_id, vlan_id)] = role
+
+    return result
+
+
+def resolve_vlan_role(
+    vlan_roles: dict[tuple[str, str, str], str],
+    org_id: str,
+    network_id: str,
+    vlan_id: int | str,
+) -> str | None:
+    """
+    Look up role for a VLAN, network-specific first then org-wide.
+    Returns role string or None if not mapped.
+    """
+    oid  = org_id.strip().lower()
+    nid  = network_id.strip().lower()
+    vid  = str(vlan_id).strip()
+    return (
+        vlan_roles.get((oid, nid, vid))
+        or vlan_roles.get((oid, "", vid))
+    )

@@ -5,9 +5,9 @@ sheet of the standards Excel file.
 
 Usage:
     python -m tools.audit_rf_profile --org-id <ORG_ID> \
-        --standards-file standards/ssid_standards_template.xlsx --xlsx
+        --standards-file standards/standard_audit_fields.xlsx --xlsx
     python -m tools.audit_rf_profile --org-id <ORG_ID> \
-        --standards-file standards/ssid_standards_template.xlsx \
+        --standards-file standards/standard_audit_fields.xlsx \
         --network-id <NET_ID> --xlsx
 """
 from __future__ import annotations

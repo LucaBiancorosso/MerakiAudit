@@ -54,9 +54,10 @@ meraki_toolkit/
 │   ├── audit_ssid.py               # SSID compliance audit
 │   ├── audit_rf_profile.py         # RF profile compliance audit
 │   ├── audit_ap.py                 # AP management & connectivity audit
+│   ├── audit_switch_interfaces.py  # Switch port role-based audit
 │   └── forecast_eol.py             # End-of-Life forecast Excel report
 ├── standards/
-│   └── ssid_standards_template.xlsx   # Standards template (fill in and use for audits)
+│   └── standard_audit_fields.xlsx   # Standards template (fill in and use for audits)
 ├── output/                         # Generated files — git-ignored
 ├── .env.example
 ├── .gitignore
@@ -68,7 +69,7 @@ meraki_toolkit/
 
 ## Standards File
 
-All three audit tools share a single Excel file: `standards/ssid_standards_template.xlsx`.
+All three audit tools share a single Excel file: `standards/standard_audit_fields.xlsx`.
 It contains the following sheets:
 
 | Sheet | Used by | Key columns |
@@ -76,6 +77,8 @@ It contains the following sheets:
 | `Standards` | `audit_ssid` | `org_id`, `network_id` *(optional)*, `ssid_name` |
 | `RFProfiles` | `audit_rf_profile` | `org_id`, `network_id` *(optional)*, `profile_name` |
 | `APConfig` | `audit_ap` | `org_id`, `network_id` *(optional)* |
+| `SwitchInterfaces` | `audit_switch_interfaces` | `org_id`, `network_id` *(optional)*, `role` |
+| `VlanRoles` | `audit_switch_interfaces` | `org_id`, `network_id` *(optional)*, `vlan_id` → `role` |
 | `Ignore` | all audit tools | `field_name` — fields to skip globally |
 
 **Network-level overrides:** for all sheets, leaving `network_id` blank defines an org-wide default. Filling it in creates a network-specific standard that takes priority over the org-wide row for that network. This allows most networks to share one standard while a specific network can deviate.
@@ -165,13 +168,87 @@ Checked fields include: `enabled`, `authMode`, `encryptionMode`, `wpaEncryptionM
 ```bash
 # Audit all networks in an org
 python -m tools.audit_ssid --org-id <ORG_ID> \
-    --standards-file standards/ssid_standards_template.xlsx --xlsx
+    --standards-file standards/standard_audit_fields.xlsx --xlsx
 
 # Audit a single network
 python -m tools.audit_ssid --org-id <ORG_ID> \
-    --standards-file standards/ssid_standards_template.xlsx \
+    --standards-file standards/standard_audit_fields.xlsx \
     --network-id <NETWORK_ID> --xlsx --csv
+
+# Skip disabled SSIDs (only audit enabled ones)
+python -m tools.audit_ssid --org-id <ORG_ID> \
+    --standards-file standards/standard_audit_fields.xlsx \
+    --enabled-only --xlsx
 ```
+
+| Argument | Default | Description |
+|---|---|---|
+| `--org-id` | required | Meraki Organization ID |
+| `--standards-file` | required | Path to the standards Excel file |
+| `--network-id` | all networks | Limit audit to a single network |
+| `--enabled-only` | false | Skip disabled SSIDs; audit only currently enabled ones |
+| `--csv` | false | Write detail and summary CSV files |
+| `--xlsx` | false | Write colour-coded Excel report |
+
+---
+
+### Switch Interface Audit
+
+Audits every enabled switch port in the org. Ports are assigned a role automatically then checked against the standard for that role.
+
+**Role detection order:**
+1. CDP/LLDP neighbour platform matches `cdp_ap_pattern` (regex) → `trunk_ap`
+2. CDP/LLDP neighbour platform matches `cdp_cpe_pattern` (regex) → `trunk_cpe`
+3. No CDP match + trunk port → `trunk_unknown` *(flagged as NON_STANDARD, not audited)*
+4. No CDP match + access port → VLAN looked up in `VlanRoles` sheet → e.g. `access_data`, `access_voice`
+5. VLAN not in map → `access_unknown` *(flagged as NON_STANDARD, not audited)*
+
+The regex patterns (`cdp_ap_pattern`, `cdp_cpe_pattern`) are defined per role row in `SwitchInterfaces` and can be different per network. For example `^MR|^CW` for APs, `^MX|Versa|VOS` for CPEs.
+
+**Audited fields per port:**
+
+| Field | Notes |
+|---|---|
+| `enabled` | Admin state |
+| `type` | `access` / `trunk` |
+| `vlan` | Access VLAN or native VLAN |
+| `voiceVlan` | Access ports only |
+| `allowedVlans` | Trunk only — compared as **expanded VLAN set** (handles ranges like `20-30`) |
+| `poeEnabled` | |
+| `isolationEnabled` | Client isolation |
+| `rstpEnabled` | Rapid STP |
+| `stpGuard` | `disabled` / `root guard` / `bpdu guard` / `loop guard` |
+| `stpPortFastTrunk` | Trunk only |
+| `udld` | `Disabled` / `Alert only` / `Enforce` |
+| `stormControlEnabled` | |
+| `daiTrusted` | Dynamic ARP Inspection trust — trunk only |
+| `accessPolicyType` | `Open` / `Custom access policy` / `MAC allow list` / `Sticky MAC allow list` |
+| `linkNegotiation` | |
+| `dot3az_enabled` | Energy Efficient Ethernet |
+
+```bash
+python -m tools.audit_switch_interfaces --org-id <ORG_ID> \
+    --standards-file standards/standard_audit_fields.xlsx --xlsx
+
+# Single network
+python -m tools.audit_switch_interfaces --org-id <ORG_ID> \
+    --standards-file standards/standard_audit_fields.xlsx \
+    --network-id <NETWORK_ID> --xlsx --csv
+
+# Include admin-disabled ports (skipped by default)
+python -m tools.audit_switch_interfaces --org-id <ORG_ID> \
+    --standards-file standards/standard_audit_fields.xlsx \
+    --include-disabled --xlsx
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `--org-id` | required | Meraki Organization ID |
+| `--standards-file` | required | Path to standards Excel file |
+| `--network-id` | all networks | Limit audit to a single network |
+| `--include-disabled` | false | Include admin-disabled ports |
+| `--csv` | false | Write detail and summary CSV files |
+| `--xlsx` | false | Write colour-coded Excel report |
 
 ---
 
@@ -190,10 +267,10 @@ Channel and band lists are compared as **unordered sets** — `"1,6,11"` matches
 
 ```bash
 python -m tools.audit_rf_profile --org-id <ORG_ID> \
-    --standards-file standards/ssid_standards_template.xlsx --xlsx
+    --standards-file standards/standard_audit_fields.xlsx --xlsx
 
 python -m tools.audit_rf_profile --org-id <ORG_ID> \
-    --standards-file standards/ssid_standards_template.xlsx \
+    --standards-file standards/standard_audit_fields.xlsx \
     --network-id <NETWORK_ID> --xlsx --csv
 ```
 
@@ -216,10 +293,10 @@ Combines three API calls per network: device inventory, alternate management int
 
 ```bash
 python -m tools.audit_ap --org-id <ORG_ID> \
-    --standards-file standards/ssid_standards_template.xlsx --xlsx
+    --standards-file standards/standard_audit_fields.xlsx --xlsx
 
 python -m tools.audit_ap --org-id <ORG_ID> \
-    --standards-file standards/ssid_standards_template.xlsx \
+    --standards-file standards/standard_audit_fields.xlsx \
     --network-id <NETWORK_ID> --xlsx --csv
 ```
 
@@ -262,6 +339,7 @@ All generated files are saved in the `output/` directory and are git-ignored by 
 | `audit_ssid` | `audit_ssid_<org_id>.xlsx`, `audit_ssid_<org_id>_detail.csv`, `audit_ssid_<org_id>_summary.csv` |
 | `audit_rf_profile` | `audit_rf_<org_id>.xlsx`, `audit_rf_<org_id>_detail.csv`, `audit_rf_<org_id>_summary.csv` |
 | `audit_ap` | `audit_ap_<org_id>.xlsx`, `audit_ap_<org_id>_detail.csv`, `audit_ap_<org_id>_summary.csv` |
+| `audit_switch_interfaces` | `audit_switch_<org_id>.xlsx`, `audit_switch_<org_id>_detail.csv`, `audit_switch_<org_id>_summary.csv` |
 | `forecast_eol` | `eol_forecast.xlsx` |
 
 ---
@@ -269,3 +347,9 @@ All generated files are saved in the `output/` directory and are git-ignored by 
 ## License
 
 MIT
+
+---
+
+## Roadmap
+
+See [`ROADMAP.md`](ROADMAP.md) for planned audit coverage across switching, security appliance, wireless, and org-level compliance.
